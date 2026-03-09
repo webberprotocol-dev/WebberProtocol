@@ -7,6 +7,7 @@ skip-lint = false
 [programs.devnet]
 webber_marketplace = "Fzm6CBQXa1vDDXXCp89T15pec82nRmEXe1rt8kXtPbDn"
 webber_registry = "Cv7jws8s9MZ1rFZw8jwLxcezmmb77t4RyybjZovpJ4P"
+webber_reputation = "ADyVkB2FPJmPyh4vzYksH22r6XTyKJbBbiXWGvjrzBxF"
 webber_token = "HWQmKMXyhr2mbtE5zG1iyHnPReBpm7xSiWaaujfdWoyq"
 
 [registry]
