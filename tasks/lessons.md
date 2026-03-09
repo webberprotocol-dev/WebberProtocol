@@ -47,3 +47,41 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 **Solution:** Use `cluster = "Localnet"` in Anchor.toml. `anchor test` automatically starts and stops a local validator.
 
 **Pattern:** Always use Localnet for tests. Only switch to Devnet for manual deployment.
+
+## 2026-03-09: Cross-program CPI with Anchor (marketplace → token)
+
+**Context:** The marketplace's `execute_payment` needed to CPI to `webber_token::transfer_with_burn`.
+
+**Pattern:**
+1. Add the target program as a Cargo dependency with `features = ["cpi"]`
+2. Use `webber_token::cpi::accounts::TransferWithBurn` for the accounts struct
+3. Use `webber_token::cpi::transfer_with_burn(ctx, amount)` for the call
+4. The buyer's signer is forwarded automatically through CPI since they signed the outer transaction
+5. Validate the CPI target program with `#[account(address = webber_token::ID)]`
+
+**Anti-pattern:** Duplicating burn math in the marketplace. Instead, import `BURN_NUMERATOR` and `BURN_DENOMINATOR` constants from webber-token for state tracking, and let the token program handle the actual transfer+burn.
+
+## 2026-03-09: Cross-program account reads with seeds::program
+
+**Context:** Marketplace needs to validate a provider is registered in webber-registry without CPI.
+
+**Pattern:** Use `seeds::program` in Anchor to validate a PDA from another program:
+```rust
+#[account(
+    seeds = [b"agent", provider.key().as_ref()],
+    bump = provider_agent.bump,
+    seeds::program = webber_registry::ID,
+    constraint = provider_agent.owner == provider.key() @ MarketplaceError::NotRegisteredAgent,
+)]
+pub provider_agent: Account<'info, webber_registry::AgentAccount>,
+```
+
+This deserializes and validates the account without CPI. Requires the source program as a Cargo dependency with `cpi` feature (for the account type).
+
+## 2026-03-09: Reentrancy protection in Solana programs
+
+**Context:** `execute_payment` must be safe against reentrancy attacks.
+
+**Pattern:** All state updates (transaction record, counter increments, stats) MUST happen BEFORE any CPI call. The CPI to webber-token happens last. This ensures that even if the CPI somehow called back into the marketplace, all state would already be committed.
+
+**Rule:** State first, CPI last. No exceptions for any instruction that does cross-program invocation.
