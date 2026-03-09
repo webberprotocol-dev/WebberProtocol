@@ -377,4 +377,420 @@ describe("webber-marketplace", () => {
 
     console.log("✅ Listing closed (soft delete)");
   });
+
+  // --- Task 6: execute_payment ---
+
+  it("Executes payment with 0.5% burn via CPI", async () => {
+    // Create and register provider
+    const providerAgent = await createFundedAgent();
+    await registerAgent(providerAgent.wallet, providerAgent.tokenAccount);
+
+    // Create listing
+    const state = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const listingId = state.listingIdCounter.toNumber();
+    const [providerAgentPda] = getAgentPda(providerAgent.wallet.publicKey);
+    const [listingPda] = getListingPda(providerAgent.wallet.publicKey, listingId);
+
+    await marketplaceProgram.methods
+      .createListing(
+        { dataRetrieval: {} },
+        new anchor.BN(10_000_000_000),  // 10 $WEB
+        new anchor.BN(0),
+        "Search API",
+        "ipfs://search"
+      )
+      .accounts({
+        provider: providerAgent.wallet.publicKey,
+        marketplaceState: marketplaceState,
+        listing: listingPda,
+        providerAgent: providerAgentPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([providerAgent.wallet])
+      .rpc();
+
+    // Create and fund buyer
+    const buyer = await createFundedAgent();
+    await registerAgent(buyer.wallet, buyer.tokenAccount);
+
+    const paymentAmount = new anchor.BN(10_000_000_000);  // 10 $WEB
+    const expectedBurn = new anchor.BN(50_000_000);  // 0.05 $WEB (0.5%)
+    const expectedReceived = new anchor.BN(9_950_000_000);  // 9.95 $WEB
+
+    // Get balances before
+    const providerBalanceBefore = (
+      await getAccount(provider.connection, providerAgent.tokenAccount)
+    ).amount;
+    const mintBefore = await getMint(provider.connection, mintKeypair.publicKey);
+
+    // Get current tx count for transaction PDA
+    const stateBeforePayment = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const txId = stateBeforePayment.totalTransactions.toNumber();
+    const [transactionPda] = getTransactionPda(listingPda, buyer.wallet.publicKey, txId);
+
+    await marketplaceProgram.methods
+      .executePayment(paymentAmount)
+      .accounts({
+        buyer: buyer.wallet.publicKey,
+        marketplaceState: marketplaceState,
+        listing: listingPda,
+        providerAgent: providerAgentPda,
+        transaction: transactionPda,
+        buyerTokenAccount: buyer.tokenAccount,
+        providerTokenAccount: providerAgent.tokenAccount,
+        mint: mintKeypair.publicKey,
+        webberTokenProgram: tokenProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([buyer.wallet])
+      .rpc();
+
+    // Verify provider received amount minus burn
+    const providerBalanceAfter = (
+      await getAccount(provider.connection, providerAgent.tokenAccount)
+    ).amount;
+    const providerIncrease = providerBalanceAfter - providerBalanceBefore;
+    assert.equal(
+      providerIncrease.toString(),
+      expectedReceived.toString(),
+      "Provider should receive 9.95 $WEB"
+    );
+
+    // Verify burn
+    const mintAfter = await getMint(provider.connection, mintKeypair.publicKey);
+    const supplyDecrease = mintBefore.supply - mintAfter.supply;
+    assert.equal(
+      supplyDecrease.toString(),
+      expectedBurn.toString(),
+      "0.05 $WEB should be burned"
+    );
+
+    // Verify transaction record
+    const txRecord = await marketplaceProgram.account.serviceTransaction.fetch(transactionPda);
+    assert.equal(txRecord.amountPaid.toString(), paymentAmount.toString());
+    assert.equal(txRecord.amountBurned.toString(), expectedBurn.toString());
+    assert.equal(txRecord.buyer.toBase58(), buyer.wallet.publicKey.toBase58());
+    assert.equal(txRecord.provider.toBase58(), providerAgent.wallet.publicKey.toBase58());
+
+    // Verify global state updated
+    const stateAfter = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    assert.equal(
+      stateAfter.totalTransactions.toString(),
+      (txId + 1).toString()
+    );
+    assert.isAbove(
+      parseInt(stateAfter.totalVolume.toString()),
+      0,
+      "Total volume should increase"
+    );
+    assert.isAbove(
+      parseInt(stateAfter.totalBurned.toString()),
+      0,
+      "Total burned should increase"
+    );
+
+    // Verify listing total_calls incremented
+    const listingAfter = await marketplaceProgram.account.serviceListing.fetch(listingPda);
+    assert.equal(listingAfter.totalCalls.toString(), "1");
+
+    console.log("✅ Payment executed with 0.5% burn via CPI");
+  });
+
+  it("Rejects payment on inactive listing", async () => {
+    // Create provider with listing, then close it
+    const providerAgent = await createFundedAgent();
+    await registerAgent(providerAgent.wallet, providerAgent.tokenAccount);
+
+    const state = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const listingId = state.listingIdCounter.toNumber();
+    const [agentPda] = getAgentPda(providerAgent.wallet.publicKey);
+    const [listingPda] = getListingPda(providerAgent.wallet.publicKey, listingId);
+
+    await marketplaceProgram.methods
+      .createListing(
+        { execution: {} },
+        new anchor.BN(5_000_000_000),
+        new anchor.BN(0),
+        "Exec Service",
+        "ipfs://exec"
+      )
+      .accounts({
+        provider: providerAgent.wallet.publicKey,
+        marketplaceState: marketplaceState,
+        listing: listingPda,
+        providerAgent: agentPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([providerAgent.wallet])
+      .rpc();
+
+    // Close it
+    await marketplaceProgram.methods
+      .closeListing()
+      .accounts({
+        provider: providerAgent.wallet.publicKey,
+        listing: listingPda,
+      })
+      .signers([providerAgent.wallet])
+      .rpc();
+
+    // Try to pay
+    const buyer = await createFundedAgent();
+    await registerAgent(buyer.wallet, buyer.tokenAccount);
+
+    const stateNow = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const txId = stateNow.totalTransactions.toNumber();
+    const [transactionPda] = getTransactionPda(listingPda, buyer.wallet.publicKey, txId);
+
+    try {
+      await marketplaceProgram.methods
+        .executePayment(new anchor.BN(5_000_000_000))
+        .accounts({
+          buyer: buyer.wallet.publicKey,
+          marketplaceState: marketplaceState,
+          listing: listingPda,
+          providerAgent: agentPda,
+          transaction: transactionPda,
+          buyerTokenAccount: buyer.tokenAccount,
+          providerTokenAccount: providerAgent.tokenAccount,
+          mint: mintKeypair.publicKey,
+          webberTokenProgram: tokenProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([buyer.wallet])
+        .rpc();
+      assert.fail("Should reject payment on inactive listing");
+    } catch (err) {
+      assert.include(err.toString(), "ListingNotActive");
+    }
+
+    console.log("✅ Payment on inactive listing correctly rejected");
+  });
+
+  // --- Task 7: open_dispute ---
+
+  it("Opens dispute within 24h window", async () => {
+    // Setup: create provider, listing, buyer, execute payment
+    const providerAgent = await createFundedAgent();
+    await registerAgent(providerAgent.wallet, providerAgent.tokenAccount);
+
+    const state = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const listingId = state.listingIdCounter.toNumber();
+    const [agentPda] = getAgentPda(providerAgent.wallet.publicKey);
+    const [listingPda] = getListingPda(providerAgent.wallet.publicKey, listingId);
+
+    await marketplaceProgram.methods
+      .createListing(
+        { computation: {} },
+        new anchor.BN(5_000_000_000),
+        new anchor.BN(0),
+        "Compute for Dispute",
+        "ipfs://dispute-test"
+      )
+      .accounts({
+        provider: providerAgent.wallet.publicKey,
+        marketplaceState: marketplaceState,
+        listing: listingPda,
+        providerAgent: agentPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([providerAgent.wallet])
+      .rpc();
+
+    const buyer = await createFundedAgent();
+    await registerAgent(buyer.wallet, buyer.tokenAccount);
+
+    const stateNow = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const txId = stateNow.totalTransactions.toNumber();
+    const [transactionPda] = getTransactionPda(listingPda, buyer.wallet.publicKey, txId);
+
+    await marketplaceProgram.methods
+      .executePayment(new anchor.BN(5_000_000_000))
+      .accounts({
+        buyer: buyer.wallet.publicKey,
+        marketplaceState: marketplaceState,
+        listing: listingPda,
+        providerAgent: agentPda,
+        transaction: transactionPda,
+        buyerTokenAccount: buyer.tokenAccount,
+        providerTokenAccount: providerAgent.tokenAccount,
+        mint: mintKeypair.publicKey,
+        webberTokenProgram: tokenProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([buyer.wallet])
+      .rpc();
+
+    // Open dispute (within 24h since we just executed)
+    await marketplaceProgram.methods
+      .openDispute()
+      .accounts({
+        buyer: buyer.wallet.publicKey,
+        transaction: transactionPda,
+      })
+      .signers([buyer.wallet])
+      .rpc();
+
+    const txRecord = await marketplaceProgram.account.serviceTransaction.fetch(transactionPda);
+    assert.deepEqual(txRecord.status, { disputed: {} });
+
+    console.log("✅ Dispute opened successfully within 24h window");
+  });
+
+  it("Rejects dispute from non-buyer", async () => {
+    const providerAgent = await createFundedAgent();
+    await registerAgent(providerAgent.wallet, providerAgent.tokenAccount);
+
+    const state = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const listingId = state.listingIdCounter.toNumber();
+    const [agentPda] = getAgentPda(providerAgent.wallet.publicKey);
+    const [listingPda] = getListingPda(providerAgent.wallet.publicKey, listingId);
+
+    await marketplaceProgram.methods
+      .createListing(
+        { analysis: {} },
+        new anchor.BN(8_000_000_000),
+        new anchor.BN(0),
+        "Analysis Dispute Test",
+        "ipfs://dispute2"
+      )
+      .accounts({
+        provider: providerAgent.wallet.publicKey,
+        marketplaceState: marketplaceState,
+        listing: listingPda,
+        providerAgent: agentPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([providerAgent.wallet])
+      .rpc();
+
+    const buyer = await createFundedAgent();
+    await registerAgent(buyer.wallet, buyer.tokenAccount);
+
+    const stateNow = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const txId = stateNow.totalTransactions.toNumber();
+    const [transactionPda] = getTransactionPda(listingPda, buyer.wallet.publicKey, txId);
+
+    await marketplaceProgram.methods
+      .executePayment(new anchor.BN(8_000_000_000))
+      .accounts({
+        buyer: buyer.wallet.publicKey,
+        marketplaceState: marketplaceState,
+        listing: listingPda,
+        providerAgent: agentPda,
+        transaction: transactionPda,
+        buyerTokenAccount: buyer.tokenAccount,
+        providerTokenAccount: providerAgent.tokenAccount,
+        mint: mintKeypair.publicKey,
+        webberTokenProgram: tokenProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([buyer.wallet])
+      .rpc();
+
+    // Try to dispute as provider (not buyer)
+    try {
+      await marketplaceProgram.methods
+        .openDispute()
+        .accounts({
+          buyer: providerAgent.wallet.publicKey,
+          transaction: transactionPda,
+        })
+        .signers([providerAgent.wallet])
+        .rpc();
+      assert.fail("Should reject dispute from non-buyer");
+    } catch (err) {
+      assert.include(err.toString(), "NotTransactionBuyer");
+    }
+
+    console.log("✅ Non-buyer dispute correctly rejected");
+  });
+
+  // --- Task 8: Integration test ---
+
+  it("Full flow: register → list → pay → verify burn → dispute", async () => {
+    // 1. Register provider agent
+    const providerAgent = await createFundedAgent();
+    await registerAgent(providerAgent.wallet, providerAgent.tokenAccount);
+
+    // 2. Create listing
+    const state = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const listingId = state.listingIdCounter.toNumber();
+    const [agentPda] = getAgentPda(providerAgent.wallet.publicKey);
+    const [listingPda] = getListingPda(providerAgent.wallet.publicKey, listingId);
+
+    await marketplaceProgram.methods
+      .createListing(
+        { dataRetrieval: {} },
+        new anchor.BN(20_000_000_000),  // 20 $WEB
+        new anchor.BN(0),
+        "Integration Test Service",
+        "ipfs://integration"
+      )
+      .accounts({
+        provider: providerAgent.wallet.publicKey,
+        marketplaceState: marketplaceState,
+        listing: listingPda,
+        providerAgent: agentPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([providerAgent.wallet])
+      .rpc();
+
+    // 3. Register buyer and pay
+    const buyer = await createFundedAgent();
+    await registerAgent(buyer.wallet, buyer.tokenAccount);
+
+    const stateNow = await marketplaceProgram.account.marketplaceState.fetch(marketplaceState);
+    const txId = stateNow.totalTransactions.toNumber();
+    const [transactionPda] = getTransactionPda(listingPda, buyer.wallet.publicKey, txId);
+    const mintBefore = await getMint(provider.connection, mintKeypair.publicKey);
+
+    await marketplaceProgram.methods
+      .executePayment(new anchor.BN(20_000_000_000))
+      .accounts({
+        buyer: buyer.wallet.publicKey,
+        marketplaceState: marketplaceState,
+        listing: listingPda,
+        providerAgent: agentPda,
+        transaction: transactionPda,
+        buyerTokenAccount: buyer.tokenAccount,
+        providerTokenAccount: providerAgent.tokenAccount,
+        mint: mintKeypair.publicKey,
+        webberTokenProgram: tokenProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([buyer.wallet])
+      .rpc();
+
+    // 4. Verify burn (0.5% of 20 $WEB = 0.1 $WEB = 100_000_000 raw)
+    const mintAfter = await getMint(provider.connection, mintKeypair.publicKey);
+    const burned = mintBefore.supply - mintAfter.supply;
+    assert.equal(burned.toString(), "100000000", "0.1 $WEB should be burned (0.5% of 20)");
+
+    // 5. Verify transaction
+    const tx = await marketplaceProgram.account.serviceTransaction.fetch(transactionPda);
+    assert.equal(tx.amountPaid.toString(), "20000000000");
+    assert.equal(tx.amountBurned.toString(), "100000000");
+
+    // 6. Open dispute
+    await marketplaceProgram.methods
+      .openDispute()
+      .accounts({
+        buyer: buyer.wallet.publicKey,
+        transaction: transactionPda,
+      })
+      .signers([buyer.wallet])
+      .rpc();
+
+    const txAfterDispute = await marketplaceProgram.account.serviceTransaction.fetch(transactionPda);
+    assert.deepEqual(txAfterDispute.status, { disputed: {} });
+
+    console.log("✅ Full integration flow: register → list → pay → burn → dispute");
+  });
 });

@@ -154,6 +154,125 @@ pub mod webber_marketplace {
         msg!("Listing {} closed", listing.listing_id);
         Ok(())
     }
+
+    /// Execute a payment from buyer to provider through the protocol.
+    /// Burns 0.5% via CPI to webber-token. State updates before CPI for reentrancy protection.
+    pub fn execute_payment(ctx: Context<ExecutePayment>, amount: u64) -> Result<()> {
+        let listing = &ctx.accounts.listing;
+        require!(listing.is_active, MarketplaceError::ListingNotActive);
+
+        // Validate provider agent is still active
+        let provider_agent = &ctx.accounts.provider_agent;
+        require!(
+            provider_agent.unstake_requested_at.is_none(),
+            MarketplaceError::AgentDeregistering
+        );
+
+        // Calculate burn amount using webber-token constants (checked arithmetic)
+        let burn_amount = amount
+            .checked_mul(BURN_NUMERATOR)
+            .ok_or(MarketplaceError::ArithmeticOverflow)?
+            .checked_div(BURN_DENOMINATOR)
+            .ok_or(MarketplaceError::ArithmeticOverflow)?;
+
+        let state = &mut ctx.accounts.marketplace_state;
+        let tx_id = state.total_transactions;
+
+        // --- STATE UPDATES BEFORE CPI (reentrancy protection) ---
+
+        // Record transaction
+        let transaction = &mut ctx.accounts.transaction;
+        transaction.listing = ctx.accounts.listing.key();
+        transaction.buyer = ctx.accounts.buyer.key();
+        transaction.provider = listing.provider;
+        transaction.amount_paid = amount;
+        transaction.amount_burned = burn_amount;
+        transaction.status = TransactionStatus::Completed;
+        transaction.timestamp = Clock::get()?.unix_timestamp;
+        transaction.tx_id = tx_id;
+        transaction.bump = ctx.bumps.transaction;
+
+        // Update listing stats
+        let listing_mut = &mut ctx.accounts.listing;
+        listing_mut.total_calls = listing_mut
+            .total_calls
+            .checked_add(1)
+            .ok_or(MarketplaceError::ArithmeticOverflow)?;
+
+        // Update global stats
+        state.total_transactions = tx_id
+            .checked_add(1)
+            .ok_or(MarketplaceError::ArithmeticOverflow)?;
+        state.total_volume = state
+            .total_volume
+            .checked_add(amount)
+            .ok_or(MarketplaceError::ArithmeticOverflow)?;
+        state.total_burned = state
+            .total_burned
+            .checked_add(burn_amount)
+            .ok_or(MarketplaceError::ArithmeticOverflow)?;
+
+        // --- CPI to webber-token for transfer with burn ---
+
+        let cpi_accounts = webber_token::cpi::accounts::TransferWithBurn {
+            authority: ctx.accounts.buyer.to_account_info(),
+            mint: ctx.accounts.mint.to_account_info(),
+            from: ctx.accounts.buyer_token_account.to_account_info(),
+            to: ctx.accounts.provider_token_account.to_account_info(),
+            token_program: ctx.accounts.token_program.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.webber_token_program.to_account_info(),
+            cpi_accounts,
+        );
+        webber_token::cpi::transfer_with_burn(cpi_ctx, amount)?;
+
+        emit!(PaymentExecutedEvent {
+            listing_id: listing_mut.listing_id,
+            buyer: ctx.accounts.buyer.key(),
+            provider: listing_mut.provider,
+            amount_paid: amount,
+            amount_burned: burn_amount,
+            tx_id,
+        });
+
+        msg!(
+            "Payment executed: {} $WEB, {} burned, tx_id={}",
+            amount,
+            burn_amount,
+            tx_id
+        );
+        Ok(())
+    }
+
+    /// Open a dispute on a completed transaction within the 24-hour window.
+    /// Only the buyer can open a dispute.
+    pub fn open_dispute(ctx: Context<OpenDispute>) -> Result<()> {
+        let transaction = &mut ctx.accounts.transaction;
+
+        require!(
+            transaction.status == TransactionStatus::Completed,
+            MarketplaceError::InvalidTransactionStatus
+        );
+
+        // Check 24-hour dispute window
+        let current_time = Clock::get()?.unix_timestamp;
+        let elapsed = current_time
+            .checked_sub(transaction.timestamp)
+            .ok_or(MarketplaceError::ArithmeticOverflow)?;
+        require!(elapsed < DISPUTE_WINDOW, MarketplaceError::DisputeWindowClosed);
+
+        transaction.status = TransactionStatus::Disputed;
+
+        emit!(DisputeOpenedEvent {
+            tx_id: transaction.tx_id,
+            buyer: transaction.buyer,
+            provider: transaction.provider,
+        });
+
+        msg!("Dispute opened on tx_id={} by {}", transaction.tx_id, ctx.accounts.buyer.key());
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -242,6 +361,86 @@ pub struct CloseListing<'info> {
         constraint = listing.provider == provider.key() @ MarketplaceError::Unauthorized,
     )]
     pub listing: Account<'info, ServiceListing>,
+}
+
+#[derive(Accounts)]
+pub struct ExecutePayment<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"marketplace_state"],
+        bump = marketplace_state.bump,
+    )]
+    pub marketplace_state: Account<'info, MarketplaceState>,
+
+    #[account(
+        mut,
+        constraint = listing.is_active @ MarketplaceError::ListingNotActive,
+    )]
+    pub listing: Account<'info, ServiceListing>,
+
+    /// Provider's agent account (validates still registered)
+    #[account(
+        seeds = [b"agent", listing.provider.as_ref()],
+        bump = provider_agent.bump,
+        seeds::program = webber_registry::ID,
+    )]
+    pub provider_agent: Account<'info, webber_registry::AgentAccount>,
+
+    #[account(
+        init,
+        payer = buyer,
+        space = ServiceTransaction::MAX_SIZE,
+        seeds = [
+            b"transaction",
+            listing.key().as_ref(),
+            buyer.key().as_ref(),
+            &marketplace_state.total_transactions.to_le_bytes(),
+        ],
+        bump,
+    )]
+    pub transaction: Account<'info, ServiceTransaction>,
+
+    /// Buyer's $WEB token account
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = buyer,
+    )]
+    pub buyer_token_account: Account<'info, TokenAccount>,
+
+    /// Provider's $WEB token account
+    #[account(
+        mut,
+        token::mint = mint,
+    )]
+    pub provider_token_account: Account<'info, TokenAccount>,
+
+    /// $WEB token mint
+    #[account(mut)]
+    pub mint: Account<'info, Mint>,
+
+    /// The webber-token program for CPI
+    /// CHECK: Validated by address constraint
+    #[account(address = webber_token::ID)]
+    pub webber_token_program: AccountInfo<'info>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct OpenDispute<'info> {
+    pub buyer: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = transaction.buyer == buyer.key() @ MarketplaceError::NotTransactionBuyer,
+        constraint = transaction.status == TransactionStatus::Completed @ MarketplaceError::InvalidTransactionStatus,
+    )]
+    pub transaction: Account<'info, ServiceTransaction>,
 }
 
 /// Global marketplace state. Seeds: ["marketplace_state"]
