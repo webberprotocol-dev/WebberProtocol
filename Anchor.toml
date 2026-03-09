@@ -12,7 +12,7 @@ webber_token = "HWQmKMXyhr2mbtE5zG1iyHnPReBpm7xSiWaaujfdWoyq"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Devnet"
+cluster = "Localnet"
 wallet = "/Users/mahomedayob/.local/share/solana/config/devnet.json"
 
 [scripts]
