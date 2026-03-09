@@ -2842,6 +2842,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "webber-marketplace"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "webber-registry",
+ "webber-token",
+]
+
+[[package]]
 name = "webber-registry"
 version = "0.1.0"
 dependencies = [
