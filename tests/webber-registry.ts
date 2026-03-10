@@ -139,6 +139,7 @@ describe("webber-registry", () => {
     assert.equal(agent.reputationScore.toString(), "0");
     assert.deepEqual(agent.capabilities, ["data_retrieval", "computation"]);
     assert.isNull(agent.unstakeRequestedAt);
+    assert.equal(agent.tier, 1, "Default tier should be 1");
 
     // Verify stake was transferred
     const balanceAfter = (

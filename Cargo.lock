@@ -2848,6 +2848,7 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "webber-registry",
+ "webber-reputation",
  "webber-token",
 ]
 
@@ -2857,6 +2858,15 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+]
+
+[[package]]
+name = "webber-reputation"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "webber-registry",
 ]
 
 [[package]]

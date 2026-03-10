@@ -58,6 +58,7 @@ pub mod webber_registry {
         agent.capabilities = capabilities;
         agent.stake_amount = stake_amount;
         agent.reputation_score = 0;
+        agent.tier = 1;
         agent.registered_at = Clock::get()?.unix_timestamp;
         agent.unstake_requested_at = None;
         agent.bump = ctx.bumps.agent_account;
@@ -158,6 +159,29 @@ pub mod webber_registry {
         // Agent account will be closed by the close constraint
         Ok(())
     }
+
+    /// Update an agent's reputation score and tier.
+    /// Only callable by the reputation program's PDA signer.
+    pub fn update_agent_reputation(
+        ctx: Context<UpdateAgentReputation>,
+        score: u64,
+        tier: u8,
+    ) -> Result<()> {
+        require!(tier >= 1 && tier <= 4, RegistryError::InvalidTier);
+
+        let agent = &mut ctx.accounts.agent_account;
+        let old_score = agent.reputation_score;
+        agent.reputation_score = score;
+        agent.tier = tier;
+
+        msg!(
+            "Agent reputation updated: {} -> {}, tier {}",
+            old_score,
+            score,
+            tier
+        );
+        Ok(())
+    }
 }
 
 /// Agent account stored as a PDA. Seeds: ["agent", owner_pubkey]
@@ -171,6 +195,8 @@ pub struct AgentAccount {
     pub stake_amount: u64,
     /// Reputation score (incremented by successful transactions)
     pub reputation_score: u64,
+    /// Reputation tier (1-4), derived from score thresholds
+    pub tier: u8,
     /// Unix timestamp when the agent was registered
     pub registered_at: i64,
     /// Unix timestamp when deregistration was requested (None if active)
@@ -181,10 +207,10 @@ pub struct AgentAccount {
 
 impl AgentAccount {
     /// Calculate space needed for the account.
-    /// Fixed fields: 32 (owner) + 8 (stake) + 8 (rep) + 8 (registered_at) + 1+8 (option<i64>) + 1 (bump) + 8 (discriminator) = 74
+    /// Fixed fields: 32 (owner) + 8 (stake) + 8 (rep) + 1 (tier) + 8 (registered_at) + 1+8 (option<i64>) + 1 (bump) + 8 (discriminator) = 75
     /// Vec<String>: 4 (vec len) + MAX_CAPABILITIES * (4 + MAX_CAPABILITY_LEN) = 4 + 10 * 68 = 684
-    /// Total: 74 + 684 = 758
-    pub const MAX_SIZE: usize = 8 + 32 + (4 + MAX_CAPABILITIES * (4 + MAX_CAPABILITY_LEN)) + 8 + 8 + 8 + (1 + 8) + 1;
+    /// Total: 75 + 684 = 759
+    pub const MAX_SIZE: usize = 8 + 32 + (4 + MAX_CAPABILITIES * (4 + MAX_CAPABILITY_LEN)) + 8 + 8 + 1 + 8 + (1 + 8) + 1;
 }
 
 #[derive(Accounts)]
@@ -301,6 +327,20 @@ pub struct ClaimUnstake<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[derive(Accounts)]
+pub struct UpdateAgentReputation<'info> {
+    /// The reputation program's authority PDA — must be a signer
+    pub reputation_authority: Signer<'info>,
+
+    /// The agent account to update
+    #[account(
+        mut,
+        seeds = [b"agent", agent_account.owner.as_ref()],
+        bump = agent_account.bump,
+    )]
+    pub agent_account: Account<'info, AgentAccount>,
+}
+
 #[error_code]
 pub enum RegistryError {
     #[msg("Insufficient stake: minimum 100 $WEB required")]
@@ -319,4 +359,6 @@ pub enum RegistryError {
     CooldownNotExpired,
     #[msg("Arithmetic overflow")]
     ArithmeticOverflow,
+    #[msg("Invalid tier value: must be 1-4")]
+    InvalidTier,
 }

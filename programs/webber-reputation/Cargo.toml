@@ -1,12 +1,12 @@
 [package]
-name = "webber-marketplace"
+name = "webber-reputation"
 version = "0.1.0"
-description = "Webber Protocol Capability Marketplace — service listings and atomic payments"
+description = "Webber Protocol Reputation Engine — trust scores from real economic activity"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "webber_marketplace"
+name = "webber_reputation"
 
 [features]
 default = []
@@ -19,6 +19,4 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
 anchor-spl = { version = "0.31.1", features = ["token"] }
-webber-token = { path = "../webber-token", features = ["cpi"] }
 webber-registry = { path = "../webber-registry", features = ["cpi"] }
-webber-reputation = { path = "../webber-reputation", features = ["cpi"] }
