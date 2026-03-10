@@ -7,15 +7,15 @@ skip-lint = false
 [programs.devnet]
 webber_marketplace = "Fzm6CBQXa1vDDXXCp89T15pec82nRmEXe1rt8kXtPbDn"
 webber_registry = "Cv7jws8s9MZ1rFZw8jwLxcezmmb77t4RyybjZovpJ4P"
-webber_reputation = "ADyVkB2FPJmPyh4vzYksH22r6XTyKJbBbiXWGvjrzBxF"
+webber_reputation = "suuVRKXTdyzBbsSJFvdd1io8gXVcUfyUf9Eno4Uzc4G"
 webber_token = "HWQmKMXyhr2mbtE5zG1iyHnPReBpm7xSiWaaujfdWoyq"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
-wallet = "/Users/mahomedayob/.local/share/solana/config/devnet.json"
+cluster = "localnet"
+wallet = "~/.local/share/solana/config/devnet.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

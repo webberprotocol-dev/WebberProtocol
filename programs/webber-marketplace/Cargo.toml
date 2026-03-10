@@ -21,3 +21,4 @@ anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
 anchor-spl = { version = "0.31.1", features = ["token"] }
 webber-token = { path = "../webber-token", features = ["cpi"] }
 webber-registry = { path = "../webber-registry", features = ["cpi"] }
+webber-reputation = { path = "../webber-reputation", features = ["cpi"] }

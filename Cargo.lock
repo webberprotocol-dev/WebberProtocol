@@ -2848,6 +2848,7 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "webber-registry",
+ "webber-reputation",
  "webber-token",
 ]
 
